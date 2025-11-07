@@ -37,4 +37,4 @@ def extract_data(url):
         # Price (VAT priority)
         vat_match = re.search(r'£([\d,]+).*?(inc VAT|including VAT)', page, re.IGNORECASE)
         price_match = re.search(r'£([\d,]+)', page)
-        no_vat_text = re.search(r'no VAT pa
+        no_vat_text = re.search(r'no VAT payable|ex VAT',
