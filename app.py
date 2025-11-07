@@ -20,4 +20,28 @@ st.caption("Analyse advert prices and compare to calculated market value.")
 
 # Inputs
 url = st.text_input("Paste advert URL (AutoTrader, eBay, etc.)")
-annual_mileage =_
+annual_mileage = st.number_input(
+    "Estimated Annual Mileage (miles/year)", 
+    min_value=5000, max_value=50000, value=15000, step=1000
+)
+
+# Function to extract advert data
+def extract_data(url):
+    try:
+        page = requests.get(url, timeout=5).text
+
+        # Extract registration year
+        year_match = re.search(r'\b(20\d{2})\b', page)
+        year = int(year_match.group(1)) if year_match else None
+
+        # Extract price, prioritize VAT-inclusive
+        vat_match = re.search(r'£([\d,]+).*?(inc VAT|including VAT)', page, re.IGNORECASE)
+        price_match = re.search(r'£([\d,]+)', page)
+        no_vat_text = re.search(r'no VAT payable|ex VAT', page, re.IGNORECASE)
+
+        if vat_match:
+            price = int(vat_match.group(1).replace(",", ""))
+        elif no_vat_text:
+            price = int(price_match.group(1).replace(",", "")) if price_match else None
+        else:
+            price = int(price_match.group(1).repl_
