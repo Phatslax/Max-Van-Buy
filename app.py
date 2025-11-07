@@ -1,135 +1,120 @@
+# app.py - Van Value Assessment Tool
 import streamlit as st
-import datetime, re, requests, io
 import matplotlib.pyplot as plt
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image
-from reportlab.lib.styles import getSampleStyleSheet
+import pandas as pd
+import numpy as np
+from fpdf import FPDF
 
-# Base depreciation curve (average condition)
-base_curve = {
-    2018: 30000, 2019: 24000, 2020: 18000, 2021: 16000,
-    2022: 14000, 2023: 12500, 2024: 11000, 2025: 12000,
-    2026: 11400, 2027: 10830, 2028: 10289, 2029: 9775, 2030: 9286
-}
+# -----------------------
+# Helper Functions
+# -----------------------
 
-st.set_page_config(page_title="Van Value Assessment Tool", page_icon="🚐", layout="centered")
-st.title("🚐 Van Value Assessment Tool (UK)")
-st.caption("Analyse advert prices and compare to calculated market value.")
-
-# Inputs
-url = st.text_input("Paste advert URL (AutoTrader, eBay, etc.)")
-annual_mileage = st.number_input(
-    "Estimated Annual Mileage (miles/year)",
-    min_value=5000, max_value=50000, value=15000, step=1000
-)
-
-def extract_data(url):
-    try:
-        page = requests.get(url, timeout=5).text
-
-        # Year
-        year_match = re.search(r'\b(20\d{2})\b', page)
-        year = int(year_match.group(1)) if year_match else None
-
-        # Price
-        vat_match = re.search(r'£([\d,]+).*?(inc VAT|including VAT)', page, re.IGNORECASE)
-        price_match = re.search(r'£([\d,]+)', page)
-        no_vat_text = re.search(r'no VAT payable|ex VAT', page, re.IGNORECASE)
-
-        if vat_match:
-            price = int(vat_match.group(1).replace(",", ""))
-        elif no_vat_text and price_match:
-            price = int(price_match.group(1).replace(",", ""))
-        elif price_match:
-            price = int(price_match.group(1).replace(",", ""))
+def calculate_historic_curve(reg_year, purchase_price, current_year, mileage_multiplier):
+    years = list(range(reg_year, current_year + 1))
+    # Typical depreciation percentages per year (example for panel vans)
+    dep_percent = [0.25, 0.15, 0.10, 0.08, 0.07, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05]
+    curve = []
+    value = purchase_price
+    for i, year in enumerate(years):
+        if i < len(dep_percent):
+            value = value * (1 - dep_percent[i])
         else:
-            price = None
+            value = value * (1 - dep_percent[-1])
+        curve.append(value * mileage_multiplier)
+    return years, curve
 
-        # Mileage
-        mileage_match = re.search(r'([\d,]+)\s*miles', page, re.IGNORECASE)
-        mileage = int(mileage_match.group(1).replace(",", "")) if mileage_match else None
+def calculate_future_curve(current_value, years_ahead, annual_mileage, default_mileage=10000, dep_rate=0.07):
+    years = list(range(years_ahead[0], years_ahead[-1]+1))
+    curve = []
+    value = current_value
+    mileage_factor = annual_mileage / default_mileage
+    for _ in years:
+        adjusted_dep = dep_rate * mileage_factor
+        value = value * (1 - adjusted_dep)
+        curve.append(value)
+    return years, curve
 
-        # Write-off
-        repair_status = "None"
-        if re.search(r'Cat S', page, re.IGNORECASE):
-            repair_status = "Cat S (Structural)"
-        elif re.search(r'Cat N', page, re.IGNORECASE):
-            repair_status = "Cat N (Non-structural)"
-
-        return {"year": year, "price": price, "mileage": mileage, "repair_status": repair_status}
-    except Exception:
-        return {}
-
-if st.button("Generate Van Assessment"):
-    if not url:
-        st.warning("Please paste a valid advert URL.")
+def price_rating(deviation_percent):
+    if deviation_percent < -5:
+        return f"Good ({deviation_percent:.1f}%)"
+    elif deviation_percent > 5:
+        return f"Poor (+{deviation_percent:.1f}%)"
     else:
-        data = extract_data(url)
-        year = data.get("year")
-        price = data.get("price")
-        mileage = data.get("mileage")
-        repair_status = data.get("repair_status")
+        return f"Fair ({deviation_percent:.1f}%)"
 
-        if not all([year, price, mileage]):
-            st.error("Could not extract necessary data from the advert.")
-        else:
-            current_year = datetime.date.today().year
-            age_years = current_year - year
-            original_price = base_curve[2018]
+def generate_pdf(advert_price, market_value, curve_years, curve_values, file_name="Van_Report.pdf"):
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", "B", 16)
+    pdf.cell(0, 10, "Van Value Assessment Report", ln=True, align='C')
+    pdf.set_font("Arial", "", 12)
+    pdf.ln(10)
+    pdf.cell(0, 10, f"Advert Price: £{advert_price:,.0f}", ln=True)
+    pdf.cell(0, 10, f"Calculated Market Value: £{market_value:,.0f}", ln=True)
+    pdf.ln(10)
+    # Save chart
+    plt.figure(figsize=(6,3))
+    plt.plot(curve_years, curve_values, marker='o', label='Depreciation Curve')
+    plt.xlabel("Year")
+    plt.ylabel("Value (£)")
+    plt.title("Van Depreciation")
+    plt.grid(True)
+    plt.tight_layout()
+    chart_file = "/tmp/depreciation_chart.png"
+    plt.savefig(chart_file)
+    plt.close()
+    pdf.image(chart_file, x=10, y=60, w=190)
+    pdf.output(file_name)
+    return file_name
 
-            # Build depreciation curve independent of advert
-            curve_years = sorted(base_curve.keys())
-            curve_values = []
-            for y in curve_years:
-                val = base_curve[y]
-                mileage_factor = annual_mileage / 15000
-                adjusted_val = val / mileage_factor
-                curve_values.append(adjusted_val)
+# -----------------------
+# Streamlit UI
+# -----------------------
 
-            # Calculated market value (latest year)
-            calc_value = curve_values[-1]
+st.title("Van Value Assessment Tool")
 
-            # Adjust for write-off
-            cat_discount = 0
-            if repair_status.startswith("Cat N"):
-                cat_discount = 0.15
-            elif repair_status.startswith("Cat S"):
-                cat_discount = 0.25
-            calc_value *= (1 - cat_discount)
+st.markdown("Paste the van advert info and provide annual mileage.")
 
-            # Price rating
-            deviation_pct = (price - calc_value) / calc_value * 100
-            if deviation_pct < -5:
-                price_rating = "Good"
-            elif deviation_pct > 5:
-                price_rating = "Poor"
-            else:
-                price_rating = "Fair"
+# User Inputs
+reg_year = st.number_input("Registration Year", min_value=2000, max_value=2030, value=2018, step=1)
+purchase_price = st.number_input("Original New Purchase Price (£)", min_value=5000, value=30000, step=500)
+advert_price = st.number_input("Advert Price (£)", min_value=1000, value=15000, step=100)
+advert_mileage = st.number_input("Advert Mileage (mi)", min_value=0, value=50000, step=1000)
+annual_mileage = st.number_input("Projected Annual Mileage (mi)", min_value=1000, value=10000, step=1000)
 
-            # Depreciation after purchase year
-            monthly_dep = (original_price - price) / (age_years * 12)
-            yearly_dep = (original_price - price) / age_years
+current_year = 2025  # You can make dynamic via datetime.datetime.now().year
+mileage_multiplier = 1.0  # can be adjusted from market-based data
+mileage_multiplier = 1 + (10000 - advert_mileage)/100000  # simple example adjustment
 
-            # Plot curve and advert price dot
-            plt.figure(figsize=(7, 4))
-            plt.plot(curve_years, curve_values, label="Calculated Market Value Curve", linewidth=2)
-            plt.scatter(current_year, price, color="red", zorder=5, label="Advert Price")
-            plt.xlabel("Year")
-            plt.ylabel("Value (£)")
-            plt.title("Van Depreciation Curve")
-            plt.legend()
-            chart_buf = io.BytesIO()
-            plt.savefig(chart_buf, format="png")
-            plt.close()
+# Historic curve
+hist_years, hist_values = calculate_historic_curve(reg_year, purchase_price, current_year, mileage_multiplier)
 
-            # Display summary
-            st.subheader("📊 Summary")
-            st.write(f"**Advert Price:** £{price:,.0f}")
-            st.write(f"**Calculated Market Value:** £{calc_value:,.0f}")
-            st.write(f"**Registration Year:** {year}")
-            st.write(f"**Mileage:** {mileage:,} miles")
-            st.write(f"**Write-off status:** {repair_status}")
-            st.write(f"**How good is the price?** {deviation_pct:+.1f}% ({price_rating})")
-            st.write(f"**Depreciation after purchase year:** £{monthly_dep:,.0f}/month, £{yearly_dep:,.0f}/year")
-            st.image(chart_buf, caption="Calculated Market Value Curve with Advert Price", use_container_width=True)
+# Future curve projection
+future_years, future_values = calculate_future_curve(hist_values[-1], list(range(current_year+1,2031)), annual_mileage)
+
+# Combine for plotting
+all_years = hist_years + future_years
+all_values = hist_values + future_values
+
+# Plot
+fig, ax = plt.subplots()
+ax.plot(all_years, all_values, label='Depreciation Curve')
+ax.scatter([current_year], [advert_price], color='red', label='Advert Price')
+ax.set_xlabel("Year")
+ax.set_ylabel("Value (£)")
+ax.set_title("Van Depreciation")
+ax.grid(True)
+ax.legend()
+st.pyplot(fig)
+
+# Deviation
+deviation = (advert_price - hist_values[-1]) / hist_values[-1] * 100
+st.write(f"How good is the price? {price_rating(deviation)}")
+st.write(f"Calculated Market Value Today: £{hist_values[-1]:,.0f}")
+st.write(f"Depreciation per year since purchase: £{(purchase_price - hist_values[-1]) / (current_year - reg_year):,.0f}")
+st.write(f"Depreciation per month since purchase: £{(purchase_price - hist_values[-1]) / ((current_year - reg_year)*12):,.0f}")
+
+# Generate PDF
+if st.button("Generate PDF Report"):
+    file = generate_pdf(advert_price, hist_values[-1], all_years, all_values)
+    st.success(f"PDF report generated: {file}")
