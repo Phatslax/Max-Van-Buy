@@ -13,17 +13,11 @@ base_curve = {
     2026: 11400, 2027: 10830, 2028: 10289, 2029: 9775, 2030: 9286
 }
 
+# Streamlit page configuration
 st.set_page_config(page_title="Van Value Assessment Tool", page_icon="🚐", layout="centered")
 st.title("🚐 Van Value Assessment Tool (UK)")
 st.caption("Analyse advert prices and compare to calculated market value.")
 
 # Inputs
 url = st.text_input("Paste advert URL (AutoTrader, eBay, etc.)")
-annual_mileage = st.number_input("Estimated Annual Mileage (miles/year)", min_value=5000, max_value=50000, value=15000, step=1000)
-
-def extract_data(url):
-    """Extract year, price, VAT, mileage, and write-off from advert HTML."""
-    try:
-        page = requests.get(url, timeout=5).text
-
-        # Year
+annual_mileage =_
