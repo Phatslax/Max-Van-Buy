@@ -13,28 +13,26 @@ base_curve = {
     2026: 11400, 2027: 10830, 2028: 10289, 2029: 9775, 2030: 9286
 }
 
-# Streamlit page configuration
 st.set_page_config(page_title="Van Value Assessment Tool", page_icon="🚐", layout="centered")
 st.title("🚐 Van Value Assessment Tool (UK)")
 st.caption("Analyse advert prices and compare to calculated market value.")
 
-# User inputs
+# Inputs
 url = st.text_input("Paste advert URL (AutoTrader, eBay, etc.)")
 annual_mileage = st.number_input(
     "Estimated Annual Mileage (miles/year)",
     min_value=5000, max_value=50000, value=15000, step=1000
 )
 
-# Function to extract advert data
 def extract_data(url):
     try:
         page = requests.get(url, timeout=5).text
 
-        # Extract year
+        # Year
         year_match = re.search(r'\b(20\d{2})\b', page)
         year = int(year_match.group(1)) if year_match else None
 
-        # Extract price, prioritize VAT-inclusive
+        # Price
         vat_match = re.search(r'£([\d,]+).*?(inc VAT|including VAT)', page, re.IGNORECASE)
         price_match = re.search(r'£([\d,]+)', page)
         no_vat_text = re.search(r'no VAT payable|ex VAT', page, re.IGNORECASE)
@@ -48,11 +46,11 @@ def extract_data(url):
         else:
             price = None
 
-        # Extract mileage
+        # Mileage
         mileage_match = re.search(r'([\d,]+)\s*miles', page, re.IGNORECASE)
         mileage = int(mileage_match.group(1).replace(",", "")) if mileage_match else None
 
-        # Detect write-off status
+        # Write-off
         repair_status = "None"
         if re.search(r'Cat S', page, re.IGNORECASE):
             repair_status = "Cat S (Structural)"
@@ -60,11 +58,9 @@ def extract_data(url):
             repair_status = "Cat N (Non-structural)"
 
         return {"year": year, "price": price, "mileage": mileage, "repair_status": repair_status}
-
     except Exception:
         return {}
 
-# Button to generate report
 if st.button("Generate Van Assessment"):
     if not url:
         st.warning("Please paste a valid advert URL.")
@@ -82,7 +78,7 @@ if st.button("Generate Van Assessment"):
             age_years = current_year - year
             original_price = base_curve[2018]
 
-            # Adjust depreciation curve for annual mileage
+            # Build depreciation curve independent of advert
             curve_years = sorted(base_curve.keys())
             curve_values = []
             for y in curve_years:
@@ -91,7 +87,7 @@ if st.button("Generate Van Assessment"):
                 adjusted_val = val / mileage_factor
                 curve_values.append(adjusted_val)
 
-            # Calculated Market Value
+            # Calculated market value (latest year)
             calc_value = curve_values[-1]
 
             # Adjust for write-off
@@ -111,13 +107,14 @@ if st.button("Generate Van Assessment"):
             else:
                 price_rating = "Fair"
 
-            # Depreciation
+            # Depreciation after purchase year
             monthly_dep = (original_price - price) / (age_years * 12)
             yearly_dep = (original_price - price) / age_years
 
-            # Plot depreciation curve only
+            # Plot curve and advert price dot
             plt.figure(figsize=(7, 4))
             plt.plot(curve_years, curve_values, label="Calculated Market Value Curve", linewidth=2)
+            plt.scatter(current_year, price, color="red", zorder=5, label="Advert Price")
             plt.xlabel("Year")
             plt.ylabel("Value (£)")
             plt.title("Van Depreciation Curve")
@@ -126,50 +123,13 @@ if st.button("Generate Van Assessment"):
             plt.savefig(chart_buf, format="png")
             plt.close()
 
-            # Display results
+            # Display summary
             st.subheader("📊 Summary")
+            st.write(f"**Advert Price:** £{price:,.0f}")
+            st.write(f"**Calculated Market Value:** £{calc_value:,.0f}")
             st.write(f"**Registration Year:** {year}")
             st.write(f"**Mileage:** {mileage:,} miles")
             st.write(f"**Write-off status:** {repair_status}")
-            st.write(f"**Calculated Market Value:** £{calc_value:,.0f}")
             st.write(f"**How good is the price?** {deviation_pct:+.1f}% ({price_rating})")
-            st.write(f"**Depreciation:** £{monthly_dep:,.0f}/month, £{yearly_dep:,.0f}/year")
-            st.image(chart_buf, caption="Calculated Market Value Curve", use_container_width=True)
-
-            # Generate PDF report
-            pdf_buffer = io.BytesIO()
-            doc = SimpleDocTemplate(pdf_buffer, pagesize=A4)
-            styles = getSampleStyleSheet()
-            story = []
-
-            story.append(Paragraph("<b>Van Value Assessment Report</b>", styles['Title']))
-            story.append(Spacer(1, 12))
-            story.append(Paragraph(f"Advert URL: <a href='{url}'>{url}</a>", styles['Normal']))
-            story.append(Spacer(1, 12))
-            story.append(Paragraph(f"<b>Registration Year:</b> {year}", styles['Normal']))
-            story.append(Paragraph(f"<b>Mileage:</b> {mileage:,} miles", styles['Normal']))
-            story.append(Paragraph(f"<b>Write-off Status:</b> {repair_status}", styles['Normal']))
-            story.append(Paragraph(f"<b>Calculated Market Value:</b> £{calc_value:,.0f}", styles['Normal']))
-            story.append(Paragraph(f"<b>How Good is the Price?</b> {deviation_pct:+.1f}% ({price_rating})", styles['Normal']))
-            story.append(Paragraph(f"<b>Depreciation:</b> £{monthly_dep:,.0f}/month, £{yearly_dep:,.0f}/year", styles['Normal']))
-            story.append(Spacer(1, 12))
-
-            chart_buf.seek(0)
-            story.append(Image(chart_buf, width=6*inch, height=3*inch))
-            story.append(Spacer(1, 12))
-            story.append(Paragraph("Blue line = Calculated Market Value Curve", styles['Italic']))
-            story.append(Spacer(1, 12))
-            story.append(Paragraph(
-                "Market value calculated using average depreciation curve adjusted for annual mileage and write-off status.",
-                styles['Italic']
-            ))
-            story.append(Spacer(1, 12))
-            story.append(Paragraph(f"Generated on {datetime.date.today().strftime('%d %B %Y')}", styles['Italic']))
-
-            doc.build(story)
-            st.download_button(
-                label="📄 Download PDF Report",
-                data=pdf_buffer.getvalue(),
-                file_name=f"Van_Value_Report_{year}.pdf",
-                mime="application/pdf"
-            )
+            st.write(f"**Depreciation after purchase year:** £{monthly_dep:,.0f}/month, £{yearly_dep:,.0f}/year")
+            st.image(chart_buf, caption="Calculated Market Value Curve with Advert Price", use_container_width=True)
