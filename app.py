@@ -18,23 +18,158 @@ st.set_page_config(page_title="Van Value Assessment Tool", page_icon="🚐", lay
 st.title("🚐 Van Value Assessment Tool (UK)")
 st.caption("Analyse advert prices and compare to calculated market value.")
 
-# Inputs
+# User inputs
 url = st.text_input("Paste advert URL (AutoTrader, eBay, etc.)")
 annual_mileage = st.number_input(
     "Estimated Annual Mileage (miles/year)",
     min_value=5000, max_value=50000, value=15000, step=1000
 )
 
-# Function to extract data from advert
+# Function to extract advert data
 def extract_data(url):
     try:
         page = requests.get(url, timeout=5).text
 
-        # Year
+        # Extract year
         year_match = re.search(r'\b(20\d{2})\b', page)
         year = int(year_match.group(1)) if year_match else None
 
-        # Price (VAT priority)
+        # Extract price, prioritize VAT-inclusive
         vat_match = re.search(r'£([\d,]+).*?(inc VAT|including VAT)', page, re.IGNORECASE)
         price_match = re.search(r'£([\d,]+)', page)
-        no_vat_text = re.search(r'no VAT payable|ex VAT',
+        no_vat_text = re.search(r'no VAT payable|ex VAT', page, re.IGNORECASE)
+
+        if vat_match:
+            price = int(vat_match.group(1).replace(",", ""))
+        elif no_vat_text and price_match:
+            price = int(price_match.group(1).replace(",", ""))
+        elif price_match:
+            price = int(price_match.group(1).replace(",", ""))
+        else:
+            price = None
+
+        # Extract mileage
+        mileage_match = re.search(r'([\d,]+)\s*miles', page, re.IGNORECASE)
+        mileage = int(mileage_match.group(1).replace(",", "")) if mileage_match else None
+
+        # Detect write-off status
+        repair_status = "None"
+        if re.search(r'Cat S', page, re.IGNORECASE):
+            repair_status = "Cat S (Structural)"
+        elif re.search(r'Cat N', page, re.IGNORECASE):
+            repair_status = "Cat N (Non-structural)"
+
+        return {"year": year, "price": price, "mileage": mileage, "repair_status": repair_status}
+
+    except Exception:
+        return {}
+
+# Button to generate report
+if st.button("Generate Van Assessment"):
+    if not url:
+        st.warning("Please paste a valid advert URL.")
+    else:
+        data = extract_data(url)
+        year = data.get("year")
+        price = data.get("price")
+        mileage = data.get("mileage")
+        repair_status = data.get("repair_status")
+
+        if not all([year, price, mileage]):
+            st.error("Could not extract necessary data from the advert.")
+        else:
+            current_year = datetime.date.today().year
+            age_years = current_year - year
+            original_price = base_curve[2018]
+
+            # Adjust depreciation curve for annual mileage
+            curve_years = sorted(base_curve.keys())
+            curve_values = []
+            for y in curve_years:
+                val = base_curve[y]
+                mileage_factor = annual_mileage / 15000
+                adjusted_val = val / mileage_factor
+                curve_values.append(adjusted_val)
+
+            # Calculated Market Value
+            calc_value = curve_values[-1]
+
+            # Adjust for write-off
+            cat_discount = 0
+            if repair_status.startswith("Cat N"):
+                cat_discount = 0.15
+            elif repair_status.startswith("Cat S"):
+                cat_discount = 0.25
+            calc_value *= (1 - cat_discount)
+
+            # Price rating
+            deviation_pct = (price - calc_value) / calc_value * 100
+            if deviation_pct < -5:
+                price_rating = "Good"
+            elif deviation_pct > 5:
+                price_rating = "Poor"
+            else:
+                price_rating = "Fair"
+
+            # Depreciation
+            monthly_dep = (original_price - price) / (age_years * 12)
+            yearly_dep = (original_price - price) / age_years
+
+            # Plot depreciation curve only
+            plt.figure(figsize=(7, 4))
+            plt.plot(curve_years, curve_values, label="Calculated Market Value Curve", linewidth=2)
+            plt.xlabel("Year")
+            plt.ylabel("Value (£)")
+            plt.title("Van Depreciation Curve")
+            plt.legend()
+            chart_buf = io.BytesIO()
+            plt.savefig(chart_buf, format="png")
+            plt.close()
+
+            # Display results
+            st.subheader("📊 Summary")
+            st.write(f"**Registration Year:** {year}")
+            st.write(f"**Mileage:** {mileage:,} miles")
+            st.write(f"**Write-off status:** {repair_status}")
+            st.write(f"**Calculated Market Value:** £{calc_value:,.0f}")
+            st.write(f"**How good is the price?** {deviation_pct:+.1f}% ({price_rating})")
+            st.write(f"**Depreciation:** £{monthly_dep:,.0f}/month, £{yearly_dep:,.0f}/year")
+            st.image(chart_buf, caption="Calculated Market Value Curve", use_container_width=True)
+
+            # Generate PDF report
+            pdf_buffer = io.BytesIO()
+            doc = SimpleDocTemplate(pdf_buffer, pagesize=A4)
+            styles = getSampleStyleSheet()
+            story = []
+
+            story.append(Paragraph("<b>Van Value Assessment Report</b>", styles['Title']))
+            story.append(Spacer(1, 12))
+            story.append(Paragraph(f"Advert URL: <a href='{url}'>{url}</a>", styles['Normal']))
+            story.append(Spacer(1, 12))
+            story.append(Paragraph(f"<b>Registration Year:</b> {year}", styles['Normal']))
+            story.append(Paragraph(f"<b>Mileage:</b> {mileage:,} miles", styles['Normal']))
+            story.append(Paragraph(f"<b>Write-off Status:</b> {repair_status}", styles['Normal']))
+            story.append(Paragraph(f"<b>Calculated Market Value:</b> £{calc_value:,.0f}", styles['Normal']))
+            story.append(Paragraph(f"<b>How Good is the Price?</b> {deviation_pct:+.1f}% ({price_rating})", styles['Normal']))
+            story.append(Paragraph(f"<b>Depreciation:</b> £{monthly_dep:,.0f}/month, £{yearly_dep:,.0f}/year", styles['Normal']))
+            story.append(Spacer(1, 12))
+
+            chart_buf.seek(0)
+            story.append(Image(chart_buf, width=6*inch, height=3*inch))
+            story.append(Spacer(1, 12))
+            story.append(Paragraph("Blue line = Calculated Market Value Curve", styles['Italic']))
+            story.append(Spacer(1, 12))
+            story.append(Paragraph(
+                "Market value calculated using average depreciation curve adjusted for annual mileage and write-off status.",
+                styles['Italic']
+            ))
+            story.append(Spacer(1, 12))
+            story.append(Paragraph(f"Generated on {datetime.date.today().strftime('%d %B %Y')}", styles['Italic']))
+
+            doc.build(story)
+            st.download_button(
+                label="📄 Download PDF Report",
+                data=pdf_buffer.getvalue(),
+                file_name=f"Van_Value_Report_{year}.pdf",
+                mime="application/pdf"
+            )
